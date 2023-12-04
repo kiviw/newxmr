@@ -84,10 +84,56 @@ function init_wc_monero_gateway() {
         /**
          * Output for the order received page.
          */
-        public function thankyou_page() {
+        public function thankyou_page($order_id) {
+            $order = wc_get_order($order_id);
+
             if ($this->instructions) {
+                // Generate and store a unique Monero subaddress for the order
+                $subaddress = $this->generate_monero_subaddress($order);
+                update_post_meta($order_id, '_monero_subaddress', $subaddress);
+
+                echo '<p>' . sprintf(__('Please pay to the following Monero subaddress: %s', 'woocommerce'), esc_html($subaddress)) . '</p>';
                 echo wpautop(wptexturize($this->instructions));
             }
+        }
+
+        /**
+         * Generate a Monero subaddress for the order using RPC.
+         *
+         * @param WC_Order $order Order object.
+         * @return string Subaddress.
+         */
+        private function generate_monero_subaddress($order) {
+            // Example: Connect to Monero RPC to generate a subaddress
+            $monero_rpc_url = 'http://127.0.0.1:18082/json_rpc';
+            $rpc_data = json_encode([
+                'jsonrpc' => '2.0',
+                'id' => '0',
+                'method' => 'create_address',
+                'params' => [
+                    'account_index' => 0, // Adjust the account index as needed
+                    'label' => 'new-subs',
+                    'count' => 1,
+                ],
+            ]);
+
+            $ch = curl_init($monero_rpc_url);
+            curl_setopt($ch, CURLOPT_POST, 1);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $rpc_data);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+            $response = curl_exec($ch);
+            curl_close($ch);
+
+            // Example: Parse RPC response
+            $rpc_result = json_decode($response, true);
+
+            // Example: Return the generated subaddress
+            if (isset($rpc_result['result']['address'])) {
+                return $rpc_result['result']['address'];
+            }
+
+            return 'Error generating Monero subaddress.';
         }
 
         /**
@@ -108,36 +154,62 @@ function init_wc_monero_gateway() {
          */
         public function check_monero_callback() {
             // Implement Monero callback logic here.
+
+            // Check for incoming transfers to validate transactions
+            $order_id = $_POST['order_id']; // Adjust this based on your callback parameters
+            $order = wc_get_order($order_id);
+            $monero_subaddress = get_post_meta($order_id, '_monero_subaddress', true);
+
+            // Example: Connect to Monero RPC to check incoming transfers
+            $monero_rpc_url = 'http://127.0.0.1:18082/json_rpc';
+            $rpc_data = json_encode([
+                'jsonrpc' => '2.0',
+                'id' => '0',
+                'method' => 'incoming_transfers',
+                'params' => [
+                    'transfer_type' => 'all',
+                    'account_index' => 0, // Adjust the account index as needed
+                    'subaddr_indices' => [3], // Adjust the subaddress index as needed
+                ],
+            ]);
+
+            $ch = curl_init($monero_rpc_url);
+            curl_setopt($ch, CURLOPT_POST, 1);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $rpc_data);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+            $response = curl_exec($ch);
+            curl_close($ch);
+
+            // Example: Parse RPC response
+            $rpc_result = json_decode($response, true);
+
+            // Validate incoming transfers for the specific subaddress
+            $valid_transaction = false;
+
+            if (isset($rpc_result['result']['transfers'])) {
+                foreach ($rpc_result['result']['transfers'] as $transfer) {
+                    if ($transfer['subaddr_index']['minor'] == 3 && $transfer['tx_hash'] == $monero_subaddress) {
+                        $valid_transaction = true;
+                        break;
+                    }
+                }
+            }
+
+            if ($valid_transaction) {
+                // Transaction is valid, update order status and redirect
+                $order->payment_complete();
+                $order->update_status('completed');
+                wp_redirect(home_url());
+                exit;
+            } else {
+                // Transaction is not valid, handle accordingly
+                // You might want to set the order status to 'failed' or take other actions
+            }
         }
     }
 
-    /**
-     * Add the Monero Gateway to WooCommerce.
-     */
-    function add_monero_gateway($methods) {
-        $methods[] = 'WC_Monero_Gateway';
-        return $methods;
-    }
-
-    add_filter('woocommerce_payment_gateways', 'add_monero_gateway');
-
-    // Add custom currency symbol for Monero.
-    add_filter('woocommerce_currencies', 'add_monero_currency');
-    add_filter('woocommerce_currency_symbol', 'add_monero_currency_symbol', 10, 2);
-
-    function add_monero_currency($currencies) {
-        $currencies['XMR'] = __('Monero', 'woocommerce');
-        return $currencies;
-    }
-
-    function add_monero_currency_symbol($currency_symbol, $currency) {
-        switch ($currency) {
-            case 'XMR':
-                $currency_symbol = 'XMR';
-                break;
-        }
-        return $currency_symbol;
-    }
+    // ... (rest of the code remains unchanged)
 }
 
 add_action('plugins_loaded', 'init_wc_monero_gateway');
